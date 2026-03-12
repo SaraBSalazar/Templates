@@ -15,9 +15,9 @@ import textwrap
 # ── Injected by cookiecutter ───────────────────────────────────────────────────
 PROJECT_NAME    = "{{cookiecutter.project_name}}"
 DESCRIPTION     = "{{cookiecutter.description}}"
-PROJECT_PATH    = "{{cookiecutter.project_path}}"
 GIT_USERNAME    = "{{cookiecutter.github_username}}"
 GIT_EMAIL       = "{{cookiecutter.github_email}}"
+GITHUB_OWNER    = "{{cookiecutter.github_owner}}"
 PRIVATE         = "{{cookiecutter.private_repo}}" == "yes"
 
 GITIGNORE_CONTENT = textwrap.dedent("""\
@@ -95,15 +95,11 @@ def create_github_repo(token):
         subprocess.run([sys.executable, "-m", "pip", "install", "requests", "-q"])
         import requests
 
-    # Personal account → /user/repos  |  Organisation → /orgs/{org}/repos
     PERSONAL_ACCOUNT = "SaraBSalazar"
-    is_org = GIT_USERNAME != PERSONAL_ACCOUNT
-    if is_org:
-        url = f"https://api.github.com/orgs/{GIT_USERNAME}/repos"
-    else:
-        url = "https://api.github.com/user/repos"
+    is_org = GITHUB_OWNER != PERSONAL_ACCOUNT
+    url = f"https://api.github.com/orgs/{GITHUB_OWNER}/repos" if is_org else "https://api.github.com/user/repos"
 
-    print(f"\n🌐  Creating repo '{PROJECT_NAME}' under '{GIT_USERNAME}'...")
+    print(f"\n🌐  Creating repo '{PROJECT_NAME}' under '{GITHUB_OWNER}'...")
     resp = requests.post(
         url,
         json={"name": PROJECT_NAME, "description": DESCRIPTION, "private": PRIVATE, "auto_init": False},
@@ -115,24 +111,20 @@ def create_github_repo(token):
         return resp.json()["ssh_url"]
     elif resp.status_code == 422:
         print("⚠️   Repo already exists on GitHub, continuing.")
-        return f"git@github.com:{GIT_USERNAME}/{PROJECT_NAME}.git"
+        return f"git@github.com:{GITHUB_OWNER}/{PROJECT_NAME}.git"
     else:
         print(f"❌  GitHub API error {resp.status_code}: {resp.json().get('message')}")
         sys.exit(1)
 
 
 def personalise_notebook():
-    """Update the template notebook with the real project name and working path."""
     nb_path = "project_template.ipynb"
     if not os.path.exists(nb_path):
         return
-
     print("📓  Personalising notebook...")
     with open(nb_path, "r", encoding="utf-8") as f:
         nb = json.load(f)
-
     cwd = os.getcwd()
-
     for cell in nb["cells"]:
         src = cell.get("source", [])
         new_src = []
@@ -143,37 +135,11 @@ def personalise_notebook():
                 line = line.replace('title: ""', f'title: "{PROJECT_NAME}"')
             new_src.append(line)
         cell["source"] = new_src
-
     new_nb_path = f"{PROJECT_NAME}.ipynb"
     with open(new_nb_path, "w", encoding="utf-8") as f:
         json.dump(nb, f, indent=1)
-
     os.remove(nb_path)
     print(f"✅  Notebook saved as {new_nb_path}")
-
-
-def move_to_target_path():
-    """Move the generated folder to the requested project_path if different from '.'"""
-    raw = PROJECT_PATH.strip()
-    target_dir = os.path.abspath(os.path.expandvars(os.path.expanduser(raw)))
-    current = os.getcwd()
-
-    if os.path.abspath(target_dir) == os.path.dirname(current):
-        return current
-
-    dest = os.path.join(target_dir, PROJECT_NAME)
-
-    if os.path.exists(dest):
-        print(f"⚠️   Destination already exists: {dest} — using it as-is.")
-        for item in os.listdir(current):
-            shutil.move(os.path.join(current, item), dest)
-    else:
-        os.makedirs(target_dir, exist_ok=True)
-        shutil.move(current, dest)
-
-    os.chdir(dest)
-    print(f"📂  Project created at: {dest}")
-    return dest
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -187,27 +153,21 @@ def main():
             print("❌  No token provided — skipping GitHub repo creation.")
             return
 
-    # Move to the requested path first
-    cwd = move_to_target_path()
+    cwd = os.getcwd()
     print(f"\n📁  Project folder : {cwd}")
 
-    # Personalise notebook
     personalise_notebook()
 
-    # Write .gitignore
     with open(".gitignore", "w") as f:
         f.write(GITIGNORE_CONTENT)
     print("📝  .gitignore written.")
 
-    # Create GitHub repo
     remote_url = create_github_repo(token)
 
-    # Git setup
     print("\n🔧  Setting up git...")
     run(["git", "config", "--global", "user.name",  GIT_USERNAME])
     run(["git", "config", "--global", "user.email", GIT_EMAIL])
 
-    # Safety: remove any stray .git folders copied from the template repo
     print("🧹  Checking for stray .git folders...")
     for root, dirs, files in os.walk("."):
         if ".git" in dirs:
@@ -227,7 +187,7 @@ def main():
     print("\n🚀  Pushing to GitHub...")
     run(["git", "push", "-u", "origin", "main"])
 
-    print(f"\n🎉  Done! https://github.com/{GIT_USERNAME}/{PROJECT_NAME}\n")
+    print(f"\n🎉  Done! https://github.com/{GITHUB_OWNER}/{PROJECT_NAME}\n")
 
 
 if __name__ == "__main__":
