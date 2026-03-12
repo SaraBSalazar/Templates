@@ -110,7 +110,6 @@ def create_github_repo(token, owner):
         subprocess.run([sys.executable, "-m", "pip", "install", "requests", "-q"])
         import requests
 
-    # Detect whether owner is a personal account or an org via the API
     check = requests.get(
         f"https://api.github.com/users/{owner}",
         headers={"Authorization": f"token {token}", "Accept": "application/vnd.github+json"},
@@ -127,13 +126,13 @@ def create_github_repo(token, owner):
 
     if resp.status_code == 201:
         print(f"✅  Repo created: {resp.json()['html_url']}")
-        return f"https://{token}@github.com/{owner}/{PROJECT_NAME}.git"
     elif resp.status_code == 422:
         print("⚠️   Repo already exists on GitHub, continuing.")
-        return f"https://{token}@github.com/{owner}/{PROJECT_NAME}.git"
     else:
         print(f"❌  GitHub API error {resp.status_code}: {resp.json().get('message')}")
         sys.exit(1)
+
+    return f"https://{token}@github.com/{owner}/{PROJECT_NAME}.git"
 
 
 def personalise_notebook():
@@ -204,7 +203,7 @@ def main():
     run(["git", "remote", "add", "origin", remote_url])
 
     print("\n🚀  Pushing to GitHub...")
-    run(["git", "push", "-u", "origin", "main"])
+    run(["git", "push", "-u", "origin", "main", "--force"])
 
     print(f"\n🎉  Done! https://github.com/{github_owner}/{PROJECT_NAME}\n")
 
