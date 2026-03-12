@@ -95,8 +95,12 @@ def create_github_repo(token):
         subprocess.run([sys.executable, "-m", "pip", "install", "requests", "-q"])
         import requests
 
-    PERSONAL_ACCOUNT = "SaraBSalazar"
-    is_org = GITHUB_OWNER != PERSONAL_ACCOUNT
+    # Detect whether GITHUB_OWNER is a personal account or an org via the API
+    check = requests.get(
+        f"https://api.github.com/users/{GITHUB_OWNER}",
+        headers={"Authorization": f"token {token}", "Accept": "application/vnd.github+json"},
+    )
+    is_org = check.status_code == 200 and check.json().get("type") == "Organization"
     url = f"https://api.github.com/orgs/{GITHUB_OWNER}/repos" if is_org else "https://api.github.com/user/repos"
 
     print(f"\n🌐  Creating repo '{PROJECT_NAME}' under '{GITHUB_OWNER}'...")
@@ -108,10 +112,10 @@ def create_github_repo(token):
 
     if resp.status_code == 201:
         print(f"✅  Repo created: {resp.json()['html_url']}")
-        return resp.json()["ssh_url"]
+        return f"https://{token}@github.com/{GITHUB_OWNER}/{PROJECT_NAME}.git"
     elif resp.status_code == 422:
         print("⚠️   Repo already exists on GitHub, continuing.")
-        return f"git@github.com:{GITHUB_OWNER}/{PROJECT_NAME}.git"
+        return f"https://{token}@github.com/{GITHUB_OWNER}/{PROJECT_NAME}.git"
     else:
         print(f"❌  GitHub API error {resp.status_code}: {resp.json().get('message')}")
         sys.exit(1)

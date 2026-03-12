@@ -1,8 +1,8 @@
 {
   "project_name": "my-project",
   "description": "A short description of the project",
-  "github_username": "SaraBSalazar",
-  "github_email": "sara.barbosa.salazar@gmail.com",
-  "github_owner": ["SaraBSalazar", "ADAorg"],
+  "github_username": "",
+  "github_email": "",
+  "github_owner": "",
   "private_repo": ["no", "yes"]
 }
