@@ -1,0 +1,16 @@
+{
+  "project_name": "my-project",
+  "description": "A short description of the project",
+  "github_username": "",
+  "github_email": "",
+  "github_owner": "{{cookiecutter.github_username}}",
+  "private_repo": ["no", "yes"],
+  "__prompts__": {
+    "project_name": "Project name",
+    "description": "Short description",
+    "github_username": "GitHub username",
+    "github_email": "GitHub email",
+    "github_owner": "GitHub owner (user or org, leave blank to use username)",
+    "private_repo": "Private repository?"
+  }
+}
