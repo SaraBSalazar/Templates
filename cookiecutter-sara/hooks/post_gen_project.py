@@ -16,7 +16,6 @@ import textwrap
 PROJECT_NAME    = "{{cookiecutter.project_name}}"
 DESCRIPTION     = "{{cookiecutter.description}}"
 PROJECT_PATH    = "{{cookiecutter.project_path}}"
-GITHUB_OWNER    = "{{cookiecutter.github_owner}}"   # personal account or org
 GIT_USERNAME    = "{{cookiecutter.github_username}}"
 GIT_EMAIL       = "{{cookiecutter.github_email}}"
 PRIVATE         = "{{cookiecutter.private_repo}}" == "yes"
@@ -97,13 +96,14 @@ def create_github_repo(token):
         import requests
 
     # Personal account → /user/repos  |  Organisation → /orgs/{org}/repos
-    is_org = GITHUB_OWNER != GIT_USERNAME
+    PERSONAL_ACCOUNT = "SaraBSalazar"
+    is_org = GIT_USERNAME != PERSONAL_ACCOUNT
     if is_org:
-        url = f"https://api.github.com/orgs/{GITHUB_OWNER}/repos"
+        url = f"https://api.github.com/orgs/{GIT_USERNAME}/repos"
     else:
         url = "https://api.github.com/user/repos"
 
-    print(f"\n🌐  Creating repo '{PROJECT_NAME}' under '{GITHUB_OWNER}'...")
+    print(f"\n🌐  Creating repo '{PROJECT_NAME}' under '{GIT_USERNAME}'...")
     resp = requests.post(
         url,
         json={"name": PROJECT_NAME, "description": DESCRIPTION, "private": PRIVATE, "auto_init": False},
@@ -115,13 +115,11 @@ def create_github_repo(token):
         return resp.json()["ssh_url"]
     elif resp.status_code == 422:
         print("⚠️   Repo already exists on GitHub, continuing.")
-        return f"git@github.com:{GITHUB_OWNER}/{PROJECT_NAME}.git"
+        return f"git@github.com:{GIT_USERNAME}/{PROJECT_NAME}.git"
     else:
         print(f"❌  GitHub API error {resp.status_code}: {resp.json().get('message')}")
         sys.exit(1)
 
-
-# ── Main ───────────────────────────────────────────────────────────────────────
 
 def personalise_notebook():
     """Update the template notebook with the real project name and working path."""
@@ -139,16 +137,13 @@ def personalise_notebook():
         src = cell.get("source", [])
         new_src = []
         for line in src:
-            # Update working_loc to the actual project folder
             if "working_loc" in line and "=" in line:
                 line = f"working_loc = '{cwd}'\n"
-            # Update the title in the YAML front matter
             if line.strip().startswith('title: ""'):
                 line = line.replace('title: ""', f'title: "{PROJECT_NAME}"')
             new_src.append(line)
         cell["source"] = new_src
 
-    # Rename notebook to match project
     new_nb_path = f"{PROJECT_NAME}.ipynb"
     with open(new_nb_path, "w", encoding="utf-8") as f:
         json.dump(nb, f, indent=1)
@@ -158,27 +153,18 @@ def personalise_notebook():
 
 
 def move_to_target_path():
-    """
-    If the user specified a project_path other than '.', move the generated
-    folder there and change into it.
-    """
+    """Move the generated folder to the requested project_path if different from '.'"""
     raw = PROJECT_PATH.strip()
-
-    # Expand ~ and env vars, then make absolute
     target_dir = os.path.abspath(os.path.expandvars(os.path.expanduser(raw)))
-
-    # The folder cookiecutter just created is os.getcwd()
     current = os.getcwd()
 
     if os.path.abspath(target_dir) == os.path.dirname(current):
-        # Already in the right place
         return current
 
     dest = os.path.join(target_dir, PROJECT_NAME)
 
     if os.path.exists(dest):
         print(f"⚠️   Destination already exists: {dest} — using it as-is.")
-        # Move contents over instead of failing
         for item in os.listdir(current):
             shutil.move(os.path.join(current, item), dest)
     else:
@@ -190,13 +176,16 @@ def move_to_target_path():
     return dest
 
 
+# ── Main ───────────────────────────────────────────────────────────────────────
+
 def main():
     token = os.getenv("GITHUB_TOKEN")
     if not token:
-        print("\n⚠️   GITHUB_TOKEN not set — skipping GitHub repo creation.")
-        print("    Set it with:  export GITHUB_TOKEN=your_token_here")
-        print("    Then re-run:  python git_init.py --name", PROJECT_NAME)
-        return
+        print("\n🔑  GITHUB_TOKEN not set as environment variable.")
+        token = input("    Enter your GitHub token: ").strip()
+        if not token:
+            print("❌  No token provided — skipping GitHub repo creation.")
+            return
 
     # Move to the requested path first
     cwd = move_to_target_path()
@@ -217,6 +206,16 @@ def main():
     print("\n🔧  Setting up git...")
     run(["git", "config", "--global", "user.name",  GIT_USERNAME])
     run(["git", "config", "--global", "user.email", GIT_EMAIL])
+
+    # Safety: remove any stray .git folders copied from the template repo
+    print("🧹  Checking for stray .git folders...")
+    for root, dirs, files in os.walk("."):
+        if ".git" in dirs:
+            stray_git = os.path.join(root, ".git")
+            shutil.rmtree(stray_git)
+            print(f"    Removed: {stray_git}")
+        dirs[:] = [d for d in dirs if d != ".git"]
+
     run(["git", "init"])
     run(["git", "add", "."])
     run(["git", "commit", "-m", "Initiate git"])
