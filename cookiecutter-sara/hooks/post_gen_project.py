@@ -15,9 +15,6 @@ import textwrap
 # ── Injected by cookiecutter ───────────────────────────────────────────────────
 PROJECT_NAME    = "{{cookiecutter.project_name}}"
 DESCRIPTION     = "{{cookiecutter.description}}"
-GIT_USERNAME    = "{{cookiecutter.github_username}}"
-GIT_EMAIL       = "{{cookiecutter.github_email}}"
-GITHUB_OWNER    = "{{cookiecutter.github_owner}}"
 PRIVATE         = "{{cookiecutter.private_repo}}" == "yes"
 
 GITIGNORE_CONTENT = textwrap.dedent("""\
@@ -88,22 +85,40 @@ def run(cmd):
         sys.exit(1)
 
 
-def create_github_repo(token):
+def prompt_git_credentials():
+    print()
+    username = input("    GitHub username: ").strip()
+    if not username:
+        print("❌  Username required.")
+        sys.exit(1)
+
+    email = input("    GitHub email: ").strip()
+    if not email:
+        print("❌  Email required.")
+        sys.exit(1)
+
+    answer = input(f"    GitHub owner (press Enter to use '{username}'): ").strip()
+    owner = answer if answer else username
+
+    return username, email, owner
+
+
+def create_github_repo(token, owner):
     try:
         import requests
     except ImportError:
         subprocess.run([sys.executable, "-m", "pip", "install", "requests", "-q"])
         import requests
 
-    # Detect whether GITHUB_OWNER is a personal account or an org via the API
+    # Detect whether owner is a personal account or an org via the API
     check = requests.get(
-        f"https://api.github.com/users/{GITHUB_OWNER}",
+        f"https://api.github.com/users/{owner}",
         headers={"Authorization": f"token {token}", "Accept": "application/vnd.github+json"},
     )
     is_org = check.status_code == 200 and check.json().get("type") == "Organization"
-    url = f"https://api.github.com/orgs/{GITHUB_OWNER}/repos" if is_org else "https://api.github.com/user/repos"
+    url = f"https://api.github.com/orgs/{owner}/repos" if is_org else "https://api.github.com/user/repos"
 
-    print(f"\n🌐  Creating repo '{PROJECT_NAME}' under '{GITHUB_OWNER}'...")
+    print(f"\n🌐  Creating repo '{PROJECT_NAME}' under '{owner}'...")
     resp = requests.post(
         url,
         json={"name": PROJECT_NAME, "description": DESCRIPTION, "private": PRIVATE, "auto_init": False},
@@ -112,10 +127,10 @@ def create_github_repo(token):
 
     if resp.status_code == 201:
         print(f"✅  Repo created: {resp.json()['html_url']}")
-        return f"https://{token}@github.com/{GITHUB_OWNER}/{PROJECT_NAME}.git"
+        return f"https://{token}@github.com/{owner}/{PROJECT_NAME}.git"
     elif resp.status_code == 422:
         print("⚠️   Repo already exists on GitHub, continuing.")
-        return f"https://{token}@github.com/{GITHUB_OWNER}/{PROJECT_NAME}.git"
+        return f"https://{token}@github.com/{owner}/{PROJECT_NAME}.git"
     else:
         print(f"❌  GitHub API error {resp.status_code}: {resp.json().get('message')}")
         sys.exit(1)
@@ -139,11 +154,9 @@ def personalise_notebook():
                 line = line.replace('title: ""', f'title: "{PROJECT_NAME}"')
             new_src.append(line)
         cell["source"] = new_src
-    new_nb_path = "project_template.ipynb"
-    with open(new_nb_path, "w", encoding="utf-8") as f:
+    with open(nb_path, "w", encoding="utf-8") as f:
         json.dump(nb, f, indent=1)
-    # file kept with its original name
-    print(f"✅  Notebook ready as project_template.ipynb")
+    print("✅  Notebook ready as project_template.ipynb")
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -157,6 +170,8 @@ def main():
             print("❌  No token provided — skipping GitHub repo creation.")
             return
 
+    git_username, git_email, github_owner = prompt_git_credentials()
+
     cwd = os.getcwd()
     print(f"\n📁  Project folder : {cwd}")
 
@@ -166,11 +181,11 @@ def main():
         f.write(GITIGNORE_CONTENT)
     print("📝  .gitignore written.")
 
-    remote_url = create_github_repo(token)
+    remote_url = create_github_repo(token, github_owner)
 
     print("\n🔧  Setting up git...")
-    run(["git", "config", "--global", "user.name",  GIT_USERNAME])
-    run(["git", "config", "--global", "user.email", GIT_EMAIL])
+    run(["git", "config", "--global", "user.name",  git_username])
+    run(["git", "config", "--global", "user.email", git_email])
 
     print("🧹  Checking for stray .git folders...")
     for root, dirs, files in os.walk("."):
@@ -191,7 +206,7 @@ def main():
     print("\n🚀  Pushing to GitHub...")
     run(["git", "push", "-u", "origin", "main"])
 
-    print(f"\n🎉  Done! https://github.com/{GITHUB_OWNER}/{PROJECT_NAME}\n")
+    print(f"\n🎉  Done! https://github.com/{github_owner}/{PROJECT_NAME}\n")
 
 
 if __name__ == "__main__":
