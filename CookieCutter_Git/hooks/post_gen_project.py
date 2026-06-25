@@ -40,30 +40,6 @@ ELAB_BODY_HTML = """<h2><span style="font-size:14pt;"><strong>Hypothesis or Goal
 <p>&nbsp;</p>
 <h2><span style="font-size:14pt;"><strong>Discussion and conclusion</strong></span></h2>"""
 
-WINDOWS_BASE_PATH = r"C:\Users\ssalazar\OneDrive - FUNDAÇÃO GIMM - GULBENKIAN INSTITUTE FOR MOLECULAR MEDICINE\ADA GIMM\Projects\GIMM"
-WINDOWS_LOCAL_SUBFOLDERS = ["data_given_by_user", "Reports"]
-
-
-def create_windows_local_folders():
-    """Create (and open) the local Windows project folder with its subfolders.
-
-    This only does anything when actually run on Windows (the OneDrive path
-    above is Windows-specific). On other OSes this step is silently skipped.
-    """
-    if os.name != "nt":
-        print("\nℹ️   Skipping local Windows folder creation (not running on Windows).")
-        return
-
-    project_path = os.path.join(WINDOWS_BASE_PATH, PROJECT_NAME)
-    print(f"\n🗂️   Creating local folder: {project_path}")
-    try:
-        os.makedirs(project_path, exist_ok=True)
-        for sub in WINDOWS_LOCAL_SUBFOLDERS:
-            os.makedirs(os.path.join(project_path, sub), exist_ok=True)
-            print(f"    ✔  {sub}/")
-        os.startfile(project_path)
-    except Exception as e:
-        print(f"⚠️   Could not create/open local folder: {e}")
 
 
 GITIGNORE_CONTENT = textwrap.dedent("""\
@@ -409,8 +385,6 @@ def main():
     git_username, git_email, github_owner = prompt_git_credentials()
     cwd = os.getcwd()
     print(f"\n📁  Project folder : {cwd}")
-
-    create_windows_local_folders()
 
     with open(".gitignore", "w") as f:
         f.write(GITIGNORE_CONTENT)
