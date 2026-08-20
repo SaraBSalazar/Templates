@@ -20,6 +20,8 @@ PRIVATE      = "{{cookiecutter.private_repo}}" == "yes"
 GIT_USERNAME = "{{cookiecutter.github_username}}"
 GIT_EMAIL    = "{{cookiecutter.github_email}}"
 
+HOOK_VERSION = "v3 (2026-08-20) — template-driven extra fields"
+
 ELAB_BASE_URL      = "https://labbook.gimm.pt/api/v2"
 ELAB_TEMPLATE_NAME = "Agendo_Project"  # id 436 — provides extra fields structure
 ELAB_IGC_TEMPLATE_ID = 316  # "Experiments Template for IGC" — provides body text
@@ -39,8 +41,6 @@ ELAB_BODY_HTML = """<h2><span style="font-size:14pt;"><strong>Hypothesis or Goal
 <p><span style="font-size:10pt;">data must be stored at the IGC server (<strong>files1)</strong> - use &quot;Extra Fields&quot; section to mention where your data is stored</span></p>
 <p>&nbsp;</p>
 <h2><span style="font-size:14pt;"><strong>Discussion and conclusion</strong></span></h2>"""
-
-
 
 GITIGNORE_CONTENT = textwrap.dedent("""\
     # =========================
@@ -214,10 +214,219 @@ def get_team_users(req, token):
     return []
 
 
+def fetch_template(req, token, template_id):
+    """Fetch the full template object, including its metadata (extra fields definition)."""
+    resp = req.get(f"{ELAB_BASE_URL}/experiments_templates/{template_id}", headers=elab_hdrs(token))
+    if resp.status_code != 200:
+        print(f"⚠️   Could not fetch template details (HTTP {resp.status_code}).")
+        return None
+    return resp.json()
+
+
+def fetch_experiment_metadata(req, token, exp_id):
+    """Read back the experiment eLabFTW just created from the template.
+
+    This is the important one: when you POST an experiment with {"template": id},
+    eLabFTW copies the template's *whole* extra-fields structure onto the new
+    experiment — field names, types, descriptions, options, group ids, positions.
+    Reading that back and filling in values (rather than building our own dict)
+    is what keeps the descriptions and the METADATA / PROJECT INFO grouping."""
+    resp = req.get(f"{ELAB_BASE_URL}/experiments/{exp_id}", headers=elab_hdrs(token))
+    if resp.status_code != 200:
+        print(f"⚠️   Could not read back experiment metadata (HTTP {resp.status_code}).")
+        return {}
+    try:
+        return parse_metadata(resp.json().get("metadata"))
+    except Exception as exc:
+        print(f"⚠️   Could not parse experiment metadata: {exc}")
+        return {}
+
+
+def parse_metadata(raw):
+    """eLabFTW stores 'metadata' as a JSON-encoded string (sometimes already a dict)."""
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+
+
+def _ask_text(name, default, required, star=""):
+    """Prompt for a plain value. Keeps asking while the field is required and blank."""
+    if default:
+        suffix = f" (Enter = '{default}')"
+    elif required:
+        suffix = " (required)"
+    else:
+        suffix = " (Enter to skip)"
+    while True:
+        raw = input(f"    {name}{star}{suffix}: ").strip()
+        if raw:
+            return raw
+        if default or not required:
+            return default
+        print(f"    ⚠️   {name} is required on this template.")
+
+
+def resolve_user(users, prompt_label="Assigned To", required=False):
+    """Search team users by (partial) name and disambiguate if needed. Returns a userid or None."""
+    if not users:
+        return None
+    hint = "required" if required else "Enter to skip"
+    raw_name = input(f"    {prompt_label} (type a name, {hint}): ").strip().lower()
+    if not raw_name:
+        return None
+    matches = [u for u in users if raw_name in u.get("fullname", "").lower()]
+    if len(matches) == 1:
+        print(f"    ✔  {prompt_label}: {matches[0]['fullname']}")
+        return matches[0]["userid"]
+    if len(matches) > 1:
+        print("    Multiple matches:")
+        for i, u in enumerate(matches, 1):
+            print(f"      {i}) {u.get('fullname', '?')}")
+        while True:
+            raw = input(f"    Choose (1-{len(matches)}): ").strip()
+            if raw.isdigit() and 1 <= int(raw) <= len(matches):
+                print(f"    ✔  {prompt_label}: {matches[int(raw) - 1]['fullname']}")
+                return matches[int(raw) - 1]["userid"]
+            print(f"    Please enter a number between 1 and {len(matches)}.")
+    print(f"    ⚠️   No user found matching '{raw_name}' — {prompt_label} left blank.")
+    return None
+
+
+def _auto_value(field_name, github_repo_url, working_dir):
+    """Fields the script can fill in by itself — no prompt needed. Matched by name,
+    case-insensitively, so it still works regardless of field order on the template."""
+    key = field_name.strip().lower()
+    if key == "starting date":
+        return date.today().isoformat()
+    if key == "github":
+        return github_repo_url
+    if key in ("data location", "analysis location"):
+        return working_dir
+    return None
+
+
+def prompt_extra_fields(extra_fields_def, github_repo_url, working_dir, users, groups=None):
+    """Walk every extra field defined on the chosen template and fill it in — automatically
+    where the script already knows the answer, otherwise by prompting with the right input
+    style for that field's type (select/radio, users, checkbox, or plain text/date/url/...).
+    Returns a new extra_fields dict with the same shape as the template's own definition
+    (type/group_id/position/description/required/options preserved), values filled in.
+
+    Fields are walked group by group, in the same order eLab shows them: 'position'
+    restarts at 0 inside each group (User is position 0 of group 1, Project Type is
+    position 0 of group 2), so sorting on position alone would interleave the sections."""
+    filled = {}
+    group_names = {g.get("id"): g.get("name") for g in (groups or [])}
+
+    def sort_key(kv):
+        name, d = kv
+        if not isinstance(d, dict):
+            return (0, 0, name)
+        return (d.get("group_id") or 0, d.get("position") or 0, name)
+
+    ordered = sorted(extra_fields_def.items(), key=sort_key)
+    current_group = object()  # sentinel — never equal to a real group id
+
+    for name, definition in ordered:
+        if not isinstance(definition, dict):
+            filled[name] = definition
+            continue
+
+        field = dict(definition)  # copy — don't mutate the template's own definition
+        field_type = field.get("type", "text")
+        required = bool(field.get("required"))
+
+        group_id = field.get("group_id")
+        if group_id != current_group:
+            current_group = group_id
+            heading = group_names.get(group_id) or (f"Group {group_id}" if group_id else "Fields")
+            print(f"\n    ── {heading} ──")
+
+        auto = _auto_value(name, github_repo_url, working_dir)
+        if auto is not None:
+            field["value"] = auto
+            print(f"    ✔  {name}: {auto}")
+            filled[name] = field
+            continue
+
+        # Show the template's own help text for this field, so the terminal prompt
+        # says the same thing eLab shows under the field name in the web UI.
+        hint = (field.get("description") or "").strip()
+        if hint:
+            print(f"\n    ℹ️   {name} — {hint}")
+
+        # eLab marks some fields required (User, Project Type, Agendo Reference on the
+        # Agendo_Project template) — don't let those be left blank.
+        star = " *" if required else ""
+
+        if field_type in ("select", "radio"):
+            options = field.get("options") or []
+            default = field.get("value", "")
+            if options:
+                if not hint:
+                    print()
+                print(f"    Available options for '{name}'{star}:")
+                for i, opt in enumerate(options, 1):
+                    print(f"      {i}) {opt}")
+                suffix = f"Enter = '{default}'" if default else "required" if required else "Enter to skip"
+                while True:
+                    raw = input(f"    Choose {name} (1-{len(options)}, {suffix}): ").strip()
+                    if raw.isdigit() and 1 <= int(raw) <= len(options):
+                        field["value"] = options[int(raw) - 1]
+                        print(f"    ✔  {name}: {field['value']}")
+                        break
+                    if not raw and default:
+                        break  # keep the template's own default value
+                    if not raw and not required:
+                        break
+                    print(f"    Please enter a number between 1 and {len(options)}.")
+            else:
+                field["value"] = _ask_text(name, field.get("value", ""), required, star)
+
+        elif field_type == "users":
+            while True:
+                userid = resolve_user(users, prompt_label=name, required=required)
+                if userid:
+                    field["value"] = userid
+                    break
+                if not required:
+                    break
+                print(f"    ⚠️   {name} is required on this template.")
+
+        elif field_type == "checkbox":
+            raw = input(f"    {name}? (y/N): ").strip().lower()
+            field["value"] = "on" if raw == "y" else ""
+
+        else:  # text, number, email, url, date, datetime-local, time, items, experiments, textarea, ...
+            field["value"] = _ask_text(name, field.get("value", ""), required, star)
+
+        filled[name] = field
+
+    return filled
+
+
 def create_elab_experiment(req, token, github_repo_url, working_dir):
-    print("\n📓  Setting up eLabFTW experiment...")
+    print(f"\n📓  Setting up eLabFTW experiment...  [hook {HOOK_VERSION}]")
+    print(f"    (running: {os.path.abspath(__file__)})")
 
     template_id = find_template_id(req, token)
+
+    # Pull the template's own extra-fields definition (and its field-group layout),
+    # so we prompt for whatever the Agendo_Project template actually defines instead
+    # of a hardcoded guess.
+    extra_fields_def = {}
+    elabftw_meta = {}
+    if template_id:
+        template_obj = fetch_template(req, token, template_id)
+        if template_obj:
+            tmpl_meta = parse_metadata(template_obj.get("metadata"))
+            extra_fields_def = tmpl_meta.get("extra_fields", {}) or {}
+            elabftw_meta = tmpl_meta.get("elabftw", {}) or {}
 
     # Status — try endpoint, fall back to known statuses on this instance
     statuses = []
@@ -258,56 +467,10 @@ def create_elab_experiment(req, token, github_repo_url, working_dir):
     raw_tags = input("    Tags (comma-separated, e.g. RNA-seq,mouse,2026 — or Enter to skip): ").strip()
     tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
 
-    print("\n    📋  Project metadata:")
-    user       = input("    User (main contact): ").strip()
-    lab        = input("    Lab / Facility: ").strip()
-    agendo_ref = input("    Agendo Reference: ").strip()
-
-    # Assigned To — type a name, search for match
-    assigned_to_userid = None
-    if users:
-        raw_name = input("    Assigned To (type a name, Enter to skip): ").strip().lower()
-        if raw_name:
-            matches = [u for u in users if raw_name in u.get("fullname", "").lower()]
-            if len(matches) == 1:
-                assigned_to_userid = matches[0]["userid"]
-                print(f"    ✔  Assigned to: {matches[0]['fullname']}")
-            elif len(matches) > 1:
-                print(f"    Multiple matches:")
-                for i, u in enumerate(matches, 1):
-                    print(f"      {i}) {u.get('fullname', '?')}")
-                while True:
-                    raw = input(f"    Choose (1-{len(matches)}): ").strip()
-                    if raw.isdigit() and 1 <= int(raw) <= len(matches):
-                        assigned_to_userid = matches[int(raw) - 1]["userid"]
-                        print(f"    ✔  Assigned to: {matches[int(raw)-1]['fullname']}")
-                        break
-                    print(f"    Please enter a number between 1 and {len(matches)}.")
-            else:
-                print(f"    ⚠️   No user found matching '{raw_name}' — Assigned To left blank.")
-
-    # ── Auto-filled fields ────────────────────────────────────────────────────
-    today         = date.today().isoformat()   # YYYY-MM-DD
-    data_location = working_dir                 # pwd of the new project folder
-
-    # ── Build extra_fields metadata ───────────────────────────────────────────
-    extra_fields = {
-        "Project Type": {"type": "select", "value": "Project"},
-        "Starting Date": {"type": "date", "value": today},
-        "Github": {"type": "url", "value": github_repo_url},
-        "Data Location": {"type": "text", "value": data_location},
-        "Analysis location": {"type": "text", "value": data_location},
-    }
-    if user:
-        extra_fields["User"] = {"type": "text", "value": user}
-    if lab:
-        extra_fields["Lab"] = {"type": "text", "value": lab}
-    if agendo_ref:
-        extra_fields["Agendo Reference"] = {"type": "text", "value": agendo_ref}
-    if assigned_to_userid:
-        extra_fields["Assigned To"] = {"type": "users", "value": assigned_to_userid}
-
     # ── Create experiment (POST) ──────────────────────────────────────────────
+    # Done *before* the metadata prompts on purpose: creating it from the template
+    # is what materialises the full extra-fields structure, which we then read back
+    # and fill in below.
     post_body = {}
     if template_id:
         post_body["template"] = template_id
@@ -328,23 +491,81 @@ def create_elab_experiment(req, token, github_repo_url, working_dir):
         print(f"⚠️   Could not parse experiment ID from: {location}")
         return
 
+    # ── Decide which field structure to fill in ───────────────────────────────
+    # Prefer the *template's* definition: it carries the descriptions, group_ids,
+    # positions, options and required flags. The copy inherited by the experiment can
+    # be thinner (an experiment previously written by this script, for instance, keeps
+    # only type+value), so it's only a backup.
+    exp_meta = fetch_experiment_metadata(req, token, exp_id)
+    if extra_fields_def:
+        print(f"    ✔  {len(extra_fields_def)} extra fields from template definition.")
+    else:
+        exp_fields = exp_meta.get("extra_fields") or {}
+        if exp_fields:
+            extra_fields_def = exp_fields
+            elabftw_meta = exp_meta.get("elabftw") or elabftw_meta
+            print(f"    ✔  {len(extra_fields_def)} extra fields inherited by the experiment.")
+
+    field_groups = (elabftw_meta or {}).get("extra_fields_groups") or []
+
+    if os.getenv("ELAB_DEBUG"):
+        print("\n--- ELAB_DEBUG: metadata on the new experiment ---")
+        print(json.dumps(exp_meta, indent=2, ensure_ascii=False))
+        print("--- end ELAB_DEBUG ---")
+
+    print("\n    📋  Project metadata:")
+    if extra_fields_def:
+        extra_fields = prompt_extra_fields(
+            extra_fields_def, github_repo_url, working_dir, users, groups=field_groups
+        )
+    else:
+        # Neither the experiment nor the template exposed any extra fields — fall back
+        # to a minimal default set so the experiment still gets useful metadata.
+        print("    ⚠️   No extra fields found on the template — using built-in defaults.")
+        print("        (Run again with ELAB_DEBUG=1 to see what the API returned.)")
+        extra_fields = {
+            "Project Type": {"type": "select", "value": "Project"},
+            "Starting Date": {"type": "date", "value": date.today().isoformat()},
+            "Github": {"type": "url", "value": github_repo_url},
+            "Data Location": {"type": "text", "value": working_dir},
+            "Analysis location": {"type": "text", "value": working_dir},
+        }
+        user       = input("    User (main contact): ").strip()
+        lab        = input("    Lab / Facility: ").strip()
+        agendo_ref = input("    Agendo Reference: ").strip()
+        if user:
+            extra_fields["User"] = {"type": "text", "value": user}
+        if lab:
+            extra_fields["Lab"] = {"type": "text", "value": lab}
+        if agendo_ref:
+            extra_fields["Agendo Reference"] = {"type": "text", "value": agendo_ref}
+        assigned_to_userid = resolve_user(users)
+        if assigned_to_userid:
+            extra_fields["Assigned To"] = {"type": "users", "value": assigned_to_userid}
+
     # ── PATCH title + status + metadata ──────────────────────────────────────
-    # Build metadata JSON string — eLabFTW stores metadata as a JSON string in the DB
-    metadata_obj = {
-        "elabftw": {
+    # eLabFTW stores metadata as a JSON string in the DB. Keep the experiment's own
+    # "elabftw" block (it carries the extra_fields_groups that give us the METADATA /
+    # PROJECT INFO headings) and only swap in the filled-in extra_fields.
+    metadata_obj = dict(exp_meta) if exp_meta else {}
+    if elabftw_meta:
+        metadata_obj["elabftw"] = elabftw_meta
+    elif "elabftw" not in metadata_obj:
+        metadata_obj["elabftw"] = {
             "extra_fields_groups": [
                 {"id": 1, "name": "Metadata"},
                 {"id": 2, "name": "Project Info"}
             ]
-        },
-        "extra_fields": extra_fields
-    }
+        }
+    metadata_obj["extra_fields"] = extra_fields
 
     patch_body = {
         "title": title,
-        "body": ELAB_BODY_HTML,
         "metadata": json.dumps(metadata_obj),
     }
+    # Only overwrite the body when the template didn't supply one of its own.
+    if not template_id:
+        patch_body["body"] = ELAB_BODY_HTML
     if status_id:
         patch_body["status"] = status_id
     if category_id:

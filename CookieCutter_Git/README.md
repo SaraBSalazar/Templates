@@ -31,7 +31,7 @@ export ELAB_TOKEN=your_elabftw_api_key_here
 ## Every new project
 
 ```bash
-cookiecutter https://github.com/SaraBSalazar/Templates --directory CookieCutter_Git
+cookiecutter path/to/CookieCutter_Git/
 ```
 
 You'll be prompted for:
